@@ -6,8 +6,11 @@ use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures::{future, Future, TryFutureExt};
+use hyper::body::Bytes;
 use hyper::client::HttpConnector;
-use hyper::header::{HeaderMap, ALLOW, CONTENT_LENGTH, CONTENT_TYPE};
+use hyper::header::{
+    HeaderMap, ACCEPT_ENCODING, ALLOW, CONTENT_ENCODING, CONTENT_LENGTH, CONTENT_TYPE,
+};
 use hyper::http::{self, HeaderValue};
 use hyper::service::Service;
 use hyper::{Body, Client, Method, Request, Response, StatusCode, Uri, Version};
@@ -49,6 +52,9 @@ impl<T: Message> ServiceRequest<T> {
             CONTENT_TYPE,
             HeaderValue::from_static(PROTOBUF_CONTENT_TYPE),
         );
+        if cfg!(feature = "compression") {
+            headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+        }
         ServiceRequest {
             uri: Default::default(),
             method: Method::POST,
@@ -153,6 +159,9 @@ impl<M: Message> ServiceResponse<M> {
             CONTENT_TYPE,
             HeaderValue::from_static(PROTOBUF_CONTENT_TYPE),
         );
+        if cfg!(feature = "compression") {
+            headers.insert(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+        }
         ServiceResponse {
             version: Version::default(),
             headers,
@@ -172,6 +181,25 @@ impl<M: Message> ServiceResponse<M> {
     }
 }
 
+fn decompress(body: Bytes, headers: &HeaderMap) -> Result<Bytes, ProstTwirpError> {
+    match headers.get(CONTENT_ENCODING) {
+        #[cfg(feature = "compression")]
+        Some(val) if val == HeaderValue::from_static("gzip") => {
+            use std::io::Read;
+            use flate2::bufread::GzDecoder;
+            let mut decoder = GzDecoder::new(&body[..]);
+            let mut decompressed = Vec::new();
+            decoder
+                .read_to_end(&mut decompressed)
+                .map_err(ProstTwirpError::DecompressionError)?;
+            Ok(decompressed.into())
+        }
+        #[cfg(feature = "compression")]
+        Some(_) => return Err(ProstTwirpError::UnsupportedCompression),
+        _ => Ok(body),
+    }
+}
+
 impl<M: Message + Default + 'static> From<M> for ServiceResponse<M> {
     fn from(v: M) -> ServiceResponse<M> {
         ServiceResponse::new(v)
@@ -185,6 +213,7 @@ impl<M: Message + Default> ServiceResponse<M> {
         let headers = resp.headers().clone();
         let status = resp.status();
         let body_bytes = hyper::body::to_bytes(resp.into_body()).await?;
+        let body_bytes = decompress(body_bytes, &headers)?;
         let err = if status.is_success() {
             match M::decode(&*body_bytes) {
                 Ok(output) => {
@@ -261,11 +290,17 @@ impl TwirpError {
             .to_json_bytes()
             .unwrap_or_else(|_| "{}".as_bytes().to_vec());
         let body_len = body_bytes.len() as u64;
-        Response::builder()
+        let mut builder = Response::builder()
             .status(self.status)
             .header(CONTENT_TYPE, JSON_CONTENT_TYPE)
             .header(CONTENT_LENGTH, HeaderValue::from(body_len))
-            .header(ALLOW, HeaderValue::from_static("POST"))
+            .header(ALLOW, HeaderValue::from_static("POST"));
+
+        if cfg!(feature = "compression") {
+            builder = builder.header(ACCEPT_ENCODING, HeaderValue::from_static("gzip"));
+        }
+
+        builder
             .body(Body::from(body_bytes))
             .expect("failed to serialize twirp error")
         // The potential panic here is not desirable but it seems highly
@@ -355,6 +390,10 @@ pub enum ProstTwirpError {
     InvalidContentType,
     /// No matching method was found for the request.
     NotFound,
+    /// Unsupported compression returned in response
+    UnsupportedCompression,
+    /// Response decompression error
+    DecompressionError(std::io::Error),
     /// A wrapper for any of the other `ProstTwirpError`s that also includes request/response info
     AfterBodyError {
         /// The request or response's raw body before the error happened
@@ -447,6 +486,8 @@ impl Error for ProstTwirpError {
             ProstTwirpError::InvalidMethod => None,
             ProstTwirpError::InvalidContentType => None,
             ProstTwirpError::NotFound => None,
+            ProstTwirpError::UnsupportedCompression => None,
+            ProstTwirpError::DecompressionError(err) => Some(err),
             ProstTwirpError::AfterBodyError { err, .. } => Some(err),
         }
     }
