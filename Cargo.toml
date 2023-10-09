@@ -17,9 +17,9 @@ compression = ["flate2"]
 
 [dependencies]
 futures = "0.3"
-prost = "0.11"
+prost = "0.12"
 serde_json = "1.0"
-prost-build = { version = "0.11", optional = true }
+prost-build = { version = "0.12", optional = true }
 proc-macro2 = { version = "1.0", optional = true }
 quote = { version = "1.0", optional = true }
 flate2 = { version = "1.0", optional = true }
