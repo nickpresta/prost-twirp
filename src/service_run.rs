@@ -258,27 +258,27 @@ impl<M: Message + Default> ServiceResponse<M> {
 #[derive(Debug, Clone)]
 pub struct TwirpError {
     pub status: StatusCode,
-    pub error_type: String,
+    pub code: String,
     pub msg: String,
     pub meta: Option<serde_json::Value>,
 }
 
 impl TwirpError {
     /// Create a Twirp error with no meta
-    pub fn new(status: StatusCode, error_type: &str, msg: &str) -> TwirpError {
-        TwirpError::new_meta(status, error_type, msg, None)
+    pub fn new(status: StatusCode, code: &str, msg: &str) -> TwirpError {
+        TwirpError::new_meta(status, code, msg, None)
     }
 
     /// Create a Twirp error with optional meta
     pub fn new_meta(
         status: StatusCode,
-        error_type: &str,
+        code: &str,
         msg: &str,
         meta: Option<serde_json::Value>,
     ) -> TwirpError {
         TwirpError {
             status,
-            error_type: error_type.to_string(),
+            code: code.to_string(),
             msg: msg.to_string(),
             meta,
         }
@@ -310,13 +310,13 @@ impl TwirpError {
 
     /// Create error from Serde JSON value
     pub fn from_json(status: StatusCode, json: serde_json::Value) -> TwirpError {
-        let error_type = json["error_type"].as_str();
+        let code = json["code"].as_str();
         TwirpError {
             status,
-            error_type: error_type.unwrap_or("<no code>").to_string(),
+            code: code.unwrap_or("<no code>").to_string(),
             msg: json["msg"].as_str().unwrap_or("<no message>").to_string(),
             // Put the whole thing as meta if there was no type
-            meta: if error_type.is_some() {
+            meta: if code.is_some() {
                 json.get("meta").cloned()
             } else {
                 Some(json.clone())
@@ -333,8 +333,8 @@ impl TwirpError {
     pub fn to_json(&self) -> serde_json::Value {
         let mut props = serde_json::map::Map::new();
         props.insert(
-            "error_type".to_string(),
-            serde_json::Value::String(self.error_type.clone()),
+            "code".to_string(),
+            serde_json::Value::String(self.code.clone()),
         );
         props.insert(
             "msg".to_string(),
@@ -356,7 +356,7 @@ impl Error for TwirpError {}
 
 impl Display for TwirpError {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "{:?} {}: {}", self.status, self.error_type, self.msg)
+        write!(f, "{:?} {}: {}", self.status, self.code, self.msg)
     }
 }
 
